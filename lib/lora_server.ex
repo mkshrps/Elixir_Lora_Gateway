@@ -10,6 +10,7 @@ defmodule Lora.Server do
   alias Circuits.GPIO
   alias Lora.Modem
   alias Lora.Bits
+  alias Lora.AutoTune
   require Logger
 
   # SPI
@@ -21,7 +22,7 @@ defmodule Lora.Server do
   @lora_default_dio2_pin 24
   # hardwire the name od the manager genserver for now
   @comms_manager_server SensorHubComms
-  @moduledoc """
+  @doc """
   initialise lora receiver
   the following options are available
   :spi "spidev0.0" , "spidev0.1"
@@ -38,8 +39,6 @@ defmodule Lora.Server do
   :crc on/off
   :error_coding
   :payload
-
-
   """
   def init(config) do
     pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
@@ -79,8 +78,10 @@ defmodule Lora.Server do
          snr: 0,
          last_payload: [],
          last_msg_status: :none,
-         auto_tune: true
-     }}
+         auto_tune: true,
+         frq_err: 0,
+         ppm_comp: 0
+         }}
   end
 
 
@@ -90,7 +91,7 @@ defmodule Lora.Server do
     version = Modem.get_version(state.spi)
 
     if version == 0x12 do
-      Modem.begin(state.spi,frequency,state.config.modem_config, state.current_mode)
+      Modem.begin(state.spi,frequency,state.config.modem_config )
 
       # enable receiver interrupt
       Modem.enable_receiver_interrupts(state.spi)
@@ -106,13 +107,23 @@ defmodule Lora.Server do
   def handle_info({:circuits_gpio, @lora_default_dio0_pin, _timestamp, _value}, state) do
     Logger.info("dio0 triggered")
     state = process_rx_interrupt(msg_ok?(state.spi),state)
-
-    err = Modem.frq_error(state.spi)
-    Logger.info(" frq error #{err}")
     # send the payload to the comms manager
     payload_data = %{payload: state.last_payload, status: state.last_msg_status, frq: state.config.frequency, rssi: state.rssi, snr: state.snr}
     # send to supervisor uploader
     GenServer.cast(@comms_manager_server,{:process_payload,payload_data})
+
+    # Autotune if anabled
+    frequency_error = Modem.read_frq_error(state.spi)
+                      |> AutoTune.calculate_frq_error(Modem.get_signal_band_width(state.spi))
+
+    # calculate ppm compensation value
+    #ppm_comp = AutoTune.ppm_compensation(state.config.frequency,frequency_error)
+    {:ok,[frequency: new_frq, ppm: _new_ppm]} = AutoTune.tune(state.config.frequency,frequency_error,0,state.spi)
+    Logger.info("measured  frq error #{frequency_error}")
+
+    state = %{state | :config => %{state[:config] | frequency:  new_frq }}
+
+    Logger.info("state frequency - #{state.config.frequency}")
     Modem.enable_receiver_interrupts(state.spi)
     {:noreply, state}
   end
@@ -173,7 +184,7 @@ defmodule Lora.Server do
   end
 
   def handle_cast({:set_frq, frequency},state) do
-    Modem.set_frequency(state.spi,frequency)
+    Modem.set_frequency(frequency,state.spi)
     {:noreply, %{state | :config => %{state[:config] | :frequency => frequency}}}
   end
 
@@ -183,15 +194,16 @@ defmodule Lora.Server do
     {:noreply, state}
   end
 
-
- def set_auto_tune(set), do: GenServer.cast(@server_name,{:set_auto_tune,set})
-
-
-  defp start_spi(device, opts) do
+ defp start_spi(device, opts) do
     {:ok, spi} = SPI.open(device,opts)
     {:ok, spi}
   end
 
+  @doc """
+  process the DIO0 interrupt payload message
+  :ok indicates valid payload
+  :error indicates invalid payload
+  """
   def process_rx_interrupt(:ok,state) do
     payload = Modem.read_payload(state.spi,state.config.modem_config[:payload])
     rssi = Modem.rssi(state.spi,state.config.frequency)
@@ -199,7 +211,6 @@ defmodule Lora.Server do
     Logger.info("payload = #{payload}")
     Logger.info("RSSI -  #{rssi}")
     Logger.info("SNR - #{snr}")
-    Logger.info("frequency - #{state.config.frequency}")
     #Modem.reset_fifo_payload(state.spi)
     state = Map.put(state,:rssi,rssi)
     state = Map.put(state,:snr,snr)
@@ -214,7 +225,6 @@ defmodule Lora.Server do
     Logger.info("CRC Error")
     Logger.info("RSSI -  #{rssi}")
     Logger.info("SNR - #{snr}")
-    Logger.info("frequency - #{state.config.frequency}")
     #Modem.reset_fifo_payload(state.spi)
     state = Map.put(state,:rssi,rssi)
     state = Map.put(state,:snr,snr)
@@ -224,10 +234,10 @@ defmodule Lora.Server do
 
   end
 
+  # read the interrupt register
+  # test the crc error bit
+  # returns :ok or :error
   def msg_ok?(spi) do
-    # read the interrupt register
-    # test the crc error bit
-    # returns :ok or :error
     crc_mask = Lora.Parameters.irq().payload_crc_error_mask
     Modem.irq_flags(spi)
     |> check_crc(crc_mask)

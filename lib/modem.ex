@@ -6,6 +6,7 @@ defmodule Lora.Modem do
   alias Circuits.GPIO
   alias Lora.Communicator
   alias Lora.Parameters
+  alias Lora.Bits
 
   # def transmitting?(spi) do
   #   irq_flags = Communicator.read_register(spi, Parameters.register.irq_flags)
@@ -21,8 +22,9 @@ defmodule Lora.Modem do
     Logger.debug(lora_config)
     Logger.debug("Power #{power}")
     sleep(spi)
+    # reset ppm compensation
     # Set frequency
-    set_frequency(spi,frequency)
+    set_frequency(frequency,spi)
     set_base_address(spi)
     # Set LNA boost
     set_LNA_boost(spi)
@@ -35,17 +37,27 @@ defmodule Lora.Modem do
     set_bandwidth(spi,lora_config[:bw])
     set_spreading_factor(spi,lora_config[:sf])
     set_base_address(spi)
+    #map_dio_5()
     # enable rxdone interrupt
     # default mode is receiver
     map_dio_0(:rx_done,spi)
+    # start receiver
+    receive_continuous_mode(spi)
+  end
 
+  def dio_5(:done) do
+    # just return
+    :ok
+  end
+
+  def dio_5() do
+    # scan till DIO_5 complete
   end
 
   def map_dio_0(:rx_done,spi) do
     Communicator.write_register(spi,
     Parameters.register().dio_mapping_1,
     Parameters.irq_dio().rxdone)
-    receive_continuous_mode(spi)
   end
 
   def map_dio_0(:tx_done,spi) do
@@ -54,7 +66,19 @@ defmodule Lora.Modem do
     Parameters.irq_dio().txdone)
   end
 
- def enable_receiver_interrupts(spi) do
+  # this is set to mode ready on reset so never really need it
+  def map_dio_5(spi) do
+    diomap = Communicator.read_register(spi,
+      Parameters.register().dio_mapping_2)
+
+    diomap = diomap ||| Parameters.irq_dio5
+
+    Communicator.write_register(spi,
+      Parameters.register().dio_mapping_2,
+      diomap)
+  end
+
+  def enable_receiver_interrupts(spi) do
     # arm the rxtimeout, rxdone, crcerror interrupts
     Communicator.write_register(spi, Parameters.register().irq_flags, 0x70)
   end
@@ -65,6 +89,7 @@ defmodule Lora.Modem do
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().sleep
     )
+  #  :timer.sleep(10)
   end
 
   def idle(spi) do
@@ -73,6 +98,7 @@ defmodule Lora.Modem do
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().stdby
     )
+  #  :timer.sleep(10)
   end
 
   def receive_continuous_mode(spi) do
@@ -81,7 +107,7 @@ defmodule Lora.Modem do
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().rx_continuous
     )
-
+  #  :timer.sleep(10)
   end
 
   def receive_single_mode(spi) do
@@ -90,27 +116,39 @@ defmodule Lora.Modem do
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().rx_single
     )
+    :timer.sleep(10)
   end
 
-  def read_payload_byte(spi) do
-    Communicator.read_register(spi, Parameters.register().fifo)
+  def read_frq_error(spi) do
+    msb = Communicator.read_register(spi, Parameters.register().freq_error_msb)
+    mid = Communicator.read_register(spi, Parameters.register().freq_error_mid)
+    lsb = Communicator.read_register(spi, Parameters.register().freq_error_lsb)
+    [lsb: lsb, mid: mid, msb: msb]
   end
 
-  def read_payload_message(_spi,payload,0) do
-    Enum.reverse(payload)
-  end
-
-  def read_payload_message(spi,payload,byte_count) do
-    read_payload_message( spi,[read_payload_byte(spi)|payload], byte_count-1)
-  end
-
+  @doc """
+    API
+    read a payload from lora device
+  """
   def read_payload(spi,payload_len) do
     # initialise the ptr reg to the start of the received data
     currentAddr = Communicator.read_register(spi,Parameters.register().fifo_rx_current_addr)
     Communicator.write_register(spi,Parameters.register().fifo_addr_ptr,currentAddr)
-
     read_payload_message(spi,[],payload_len)
   end
+
+  defp read_payload_message(_spi,payload,0) do
+    Enum.reverse(payload)
+  end
+
+  defp read_payload_message(spi,payload,byte_count) do
+    read_payload_message( spi,[read_payload_byte(spi)|payload], byte_count-1)
+  end
+
+  defp read_payload_byte(spi) do
+    Communicator.read_register(spi, Parameters.register().fifo)
+  end
+
 
   def snr(spi), do: Communicator.read_register(spi, Parameters.register().pkt_snr_value) * 0.25
 
@@ -156,11 +194,18 @@ defmodule Lora.Modem do
     Communicator.write_register(spi, Parameters.register().payload_length, 128)
   end
 
-  def set_frequency(spi,freq) do
+  def set_frequency(freq,spi) do
     frt = trunc((trunc(freq) <<< 19) / 32_000_000)
     Communicator.write_register(spi, Parameters.register().frf_msb, frt >>> 16)
     Communicator.write_register(spi, Parameters.register().frf_mid, frt >>> 8)
     Communicator.write_register(spi, Parameters.register().frf_lsb, frt >>> 0)
+    #set_ppm_comp_reg(0,spi)
+  end
+
+  def set_ppm_comp_reg(ppm_comp,spi) do
+    Communicator.write_register(spi,
+    Parameters.register().ppm_compensation,
+    ppm_comp)
   end
 
   # def set_tx_power(spi, level, output_pin) when output_pin == Parameters.pa.output_rfo_pin do
@@ -247,11 +292,11 @@ defmodule Lora.Modem do
     end
   end
 
-  def  write_ldo(spi,ldo_on) do
+  defp  write_ldo(spi,ldo_on) do
     Communicator.write_register(
         spi,
         Parameters.register().modem_config_3,
-        bit_write(
+        Bits.bit_write(
           Communicator.read_register(spi, Parameters.register().modem_config_3),
           3,
           ldo_on
@@ -376,40 +421,6 @@ defmodule Lora.Modem do
 
   def get_version(spi), do: Communicator.read_register(spi, Parameters.register().version)
 
-  def bit_write(value, bit, subs) do
-    {ini, fim} = list_bits(value) |> add_zeros(bit) |> Enum.split(bit)
-    [_h | t] = fim
-    Enum.reverse(ini ++ [subs] ++ t) |> listbits_to_integer()
-  end
-
-  defp add_zeros(list, bit, state \\ [], i \\ 0) do
-    if length(list) <= bit and length(state) <= bit do
-      if i <= length(list) - 1 do
-        add_zeros(list, bit, state ++ [Enum.at(list, i)], i + 1)
-      else
-        add_zeros(list, bit, state ++ [0], i + 1)
-      end
-    else
-      if bit <= length(list) - 1, do: list, else: state
-    end
-  end
-
-  defp listbits_to_integer(list, state \\ 0, pot \\ 0) do
-    if pot < length(list) do
-      val = list |> Enum.reverse() |> Enum.at(pot)
-      listbits_to_integer(list, state + :math.pow(2, pot) * val, pot + 1)
-    else
-      trunc(state)
-    end
-  end
-
-  defp list_bits(value, state \\ []) do
-    unless div(value, 2) == 0 do
-      list_bits(div(value, 2), state ++ [rem(value, 2)])
-    else
-      state ++ [rem(value, 2)]
-    end
-  end
 
   defp uint8(val) do
     cond do
@@ -430,48 +441,6 @@ defmodule Lora.Modem do
     end
   end
 
-  def frq_error(spi) do
-    msb = Communicator.read_register(spi, Parameters.register().freq_error_msb)
-    mid = Communicator.read_register(spi, Parameters.register().freq_error_mid)
-    lsb = Communicator.read_register(spi, Parameters.register().freq_error_lsb)
-    get_frq_error(lsb,mid,msb)
-  end
-
-  # 128 234 13
-  def get_frq_error(lsb \\ 128,mid \\ 234, msb \\ 13) do
-    msb1 = msb &&& 0x07
-
-    val = msb1 <<< 8
-    val = val + mid
-    val = val <<< 8
-    val = val + lsb
-    val = check_sign(msb, val)
-
-    xtal = get_xtal_const()
-    bw = get_bw_const()
-
-    val =  val * xtal
-    val = val * bw
-    val
-  end
-
-  def check_sign(msb, val) when msb > 0x07 do
-    val - 524288
-  end
-
-  def check_sign(_msb, val) do
-    val
-  end
-
-  def get_bw_const() do
-    bandwidth = 20.8
-    bandwidth / 500.0
-  end
-
-  def get_xtal_const() do
-    x = 1 <<< 24
-    32.0e6 / x
-  end
 
   # defp change_third_bit(value, bit), do: if(bit == 0, do: value &&& 0xF7, else: value ||| 8)
 end

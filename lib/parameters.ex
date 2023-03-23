@@ -25,6 +25,7 @@ defmodule Lora.Parameters do
     preamble_lsb: 0x21,
     payload_length: 0x22,
     modem_config_3: 0x26,
+    ppm_compensation: 0x27,
     freq_error_msb: 0x28,
     freq_error_mid: 0x29,
     freq_error_lsb: 0x2A,
@@ -35,6 +36,7 @@ defmodule Lora.Parameters do
     sync_word: 0x39,
     invertiq2: 0x3B,
     dio_mapping_1: 0x40,
+    dio_mapping_2: 0x41,
     version: 0x42,
     pa_dac: 0x4D
   }
@@ -61,6 +63,9 @@ defmodule Lora.Parameters do
     payload_crc_error_mask: 0x20,
     rx_done_mask: 0x40
   }
+  # map dio5 as mode ready
+  @irq_dio5_map 0xcf
+
   # set diomapping1 to these values depending on mode
   @irq_dio_0_map %{
     rxdone: 0x00,
@@ -91,6 +96,7 @@ defmodule Lora.Parameters do
   def pa, do: @pa
   def irq, do: @irq
   def irq_dio, do: @irq_dio_0_map
+  def irq_dio5, do: @irq_dio5_map
   def bw_freqs, do: @bw_freqs
   def max, do: @max
   def header(set), do: if(set, do: 0xFE, else: 0x01)
