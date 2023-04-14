@@ -26,7 +26,8 @@ defmodule Lora.Server do
   initialise lora receiver
   the following options are available
   :spi "spidev0.0" , "spidev0.1"
-  :frq
+  :spi_speed
+  :frq frequency value
   :ukhas_mode 0,1,2 \\ 1
   :receiver true/false \\ true
   :rst reset pin \\ 25
@@ -38,7 +39,12 @@ defmodule Lora.Server do
   :sf lora spreading factor (6-12)
   :crc on/off
   :error_coding
-  :payload
+  :payload_length \\ 255 only applies to sf6 (ukhas mode 1)
+  :ukhas_mode 0,1,2
+
+  initially the modem config is set by a UKHAS mode (default 1) with format
+  [sf: ::6 - 12, bw: , ec: 5-8, explicit: true/false, payload: nil || 255]
+  custom configuration can be set manually following initialisation
   """
   def init(config) do
     pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
@@ -51,10 +57,6 @@ defmodule Lora.Server do
 
     {:ok, spi} = start_spi(device, [speed_hz: speed_hz])
 
-    #    state = %{receiver: true, owner: nil,
-#              spi: nil, rst: nil, config: nil, dio0: nil,dio1: nil, dio2: nil
-#            }
-
     Logger.info("Lora: Start Device")
     {:ok, rst} = GPIO.open(pin_reset, :output)
     {:ok, dio0} = GPIO.open(pin_dio_0,:input, pull_mode: :pullup)
@@ -64,6 +66,7 @@ defmodule Lora.Server do
     Modem.reset(rst)
     mode = Keyword.get(config, :ukhas_mode, 1)
     modem_config = Lora.UkhasModes.ukhas_mode(mode)
+
     {:ok,
      %{
          spi: spi,
@@ -105,7 +108,7 @@ defmodule Lora.Server do
 
   # DIO0 interrupt handler
   def handle_info({:circuits_gpio, @lora_default_dio0_pin, _timestamp, _value}, state) do
-    Logger.info("dio0 triggered")
+    #Logger.info("dio0 triggered")
     state = process_rx_interrupt(msg_ok?(state.spi),state)
     # send the payload to the comms manager
     payload_data = %{payload: state.last_payload, status: state.last_msg_status, frq: state.config.frequency, rssi: state.rssi, snr: state.snr}
@@ -118,7 +121,13 @@ defmodule Lora.Server do
 
     # calculate ppm compensation value
     #ppm_comp = AutoTune.ppm_compensation(state.config.frequency,frequency_error)
-    {:ok,[frequency: new_frq, ppm: _new_ppm]} = AutoTune.tune(state.config.frequency,frequency_error,0,state.spi)
+
+      new_frq = if state.auto_tune do
+        {:ok,[frequency: new_frq, ppm: _new_ppm]} =
+        AutoTune.tune(state.config.frequency,frequency_error,0,state.spi)
+        new_frq
+      end
+
     Logger.info("measured  frq error #{frequency_error}")
 
     state = %{state | :config => %{state[:config] | frequency:  new_frq }}
@@ -140,6 +149,16 @@ defmodule Lora.Server do
     Logger.error("Lora: Send Timeout")
     {:noreply, state}
   end
+
+  def handle_cast({:set_ukhas_mode,mode},state) do
+    modem_config = Lora.UkhasModes.ukhas_mode(mode)
+    state = if(mode >= 0 && mode <=2) do
+      set_modem_params(modem_config,state.spi)
+      put_in(state.config,:modem_config,modem_config)
+    end
+    {:noreply,state}
+  end
+
 
   def handle_cast({:set_sf, sf}, state) do
     Modem.set_spreading_factor(state.spi,sf)
@@ -190,7 +209,6 @@ defmodule Lora.Server do
 
   def handle_cast({:set_auto_tune, set},state) do
     state = Map.put(state,:auto_tune,set)
-
     {:noreply, state}
   end
 
@@ -251,4 +269,12 @@ defmodule Lora.Server do
   end
 
 
+    def  set_modem_params(lora_config,spi) do
+      op_mode = Modem.read_op_mode(spi)
+      Modem.sleep(spi)
+      Modem.set_coding_rate(spi,lora_config[:ec])
+      Modem.set_bandwidth(spi,lora_config[:bw])
+      Modem.set_spreading_factor(spi,lora_config[:sf])
+      Modem.set_op_mode(op_mode,spi)
+    end
 end

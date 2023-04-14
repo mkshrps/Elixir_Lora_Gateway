@@ -14,8 +14,6 @@
     rst: GPIO pin for the reset of radio.
     spi_speed:
     dio0: irq pin for RFMxx (required for receiver)
-    dio1: irq pin for RFMxx
-    dio2: irq pin for RFMxx
 
     # standard values: `spi: "spidev0.1", spi_speed: 8_000_000, rst: 25`
       {:ok, lora} = Lora.start_link()
@@ -46,8 +44,6 @@
     set auto tune mode
   """
   def set_auto_tune(set), do: GenServer.cast(@server_name,{:set_auto_tune,set})
-
-
   @doc """
   Set the Lora Radio in sleep mode.
       Lora.sleep()

@@ -3,17 +3,17 @@ defmodule Lora.MixProject do
 
   def project do
     [
-      app: :lora,
+      app: :lora_gateway,
       version: "1.0.0",
       elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
       package: package(),
-      name: "Lora",
-      source_url: "https://github.com/brunosantanaa/Elixir-LoRa",
+      name: "Lora_Gateway",
+      source_url: "https://github.com/mkshrps/Elixir_Lora_Gateway",
       docs: [
-        main: "LoRa",
+        main: "Lora",
         logo: "assets/logo.png",
         extras: ["README.md"]
       ]
@@ -31,8 +31,8 @@ defmodule Lora.MixProject do
 
   defp description do
     """
-    This is a module for transmitter data using LoRa Radios.
-
+    This is a module for receiving using semtec SX127x LoRa Radios.
+    Esasy configuration using UKHAS modes are supported
     Radios:
         Semtech SX1276/77/78/79 based boards.
     """

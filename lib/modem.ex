@@ -8,15 +8,8 @@ defmodule Lora.Modem do
   alias Lora.Parameters
   alias Lora.Bits
 
-  # def transmitting?(spi) do
-  #   irq_flags = Communicator.read_register(spi, Parameters.register.irq_flags)
-
-  #   unless (irq_flags &&& Parameters.irq.tx_done_mask) == 0,
-  #     do: Communicator.write_register(spi, Parameters.register.irq_flags, Parameters.irq.tx_done_mask)
-
-  #   if (Communicator.read_register(spi, Parameters.register.op_mode) &&& Parameters.mode.tx) == Parameters.mode.tx, do: true, else: false
-  # end
-
+  # frequency e.g. 434.450E6
+  #  lora_config e.g. [sf: ::6 - 12, bw: , ec: , explicit: true/false, payload: nil || 255]
   def begin(spi, frequency, lora_config, power \\ 17) do
     # Sleep mode
     Logger.debug(lora_config)
@@ -44,6 +37,7 @@ defmodule Lora.Modem do
     # start receiver
     receive_continuous_mode(spi)
   end
+
 
   def dio_5(:done) do
     # just return
@@ -117,6 +111,20 @@ defmodule Lora.Modem do
       Parameters.mode().long_range_mode ||| Parameters.mode().rx_single
     )
     :timer.sleep(10)
+  end
+
+  def read_op_mode(spi) do
+    Communicator.read_register(
+      spi,
+      Parameters.register().op_mode
+    )
+  end
+
+  def set_op_mode(op_mode,spi) do
+   Communicator.write_register(
+      spi,
+      Parameters.register().op_mode,
+      Parameters.mode().long_range_mode ||| op_mode)
   end
 
   def read_frq_error(spi) do
@@ -341,7 +349,7 @@ defmodule Lora.Modem do
     )
   end
 
-  defp set_coding_rate( spi, coding_rate) do
+  def set_coding_rate( spi, coding_rate) do
     reg = Communicator.read_register(spi, Parameters.register().modem_config_1)
 
     coding_bits = (coding_rate - 4) <<< 1
