@@ -52,7 +52,8 @@ defmodule Lora.MixProject do
       {:ex_doc, "~> 0.21", only: :dev, runtime: false},
       {:circuits_spi, "~> 1.3"},
       {:circuits_gpio, "~> 1.0"},
-      # {:dep_from_hexpm, "~> 0.3.0"},
+      {:json, "~> 1.4"},
+     # {:dep_from_hexpm, "~> 0.3.0"},
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
       #{:sondehub, path: "../sondehub" },
       #{:mqtt_gateway, path: "../mqtt_gateway"}

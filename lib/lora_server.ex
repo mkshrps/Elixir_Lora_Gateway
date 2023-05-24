@@ -18,62 +18,52 @@ defmodule Lora.Server do
   @lora_default_spi_frequency 8_000_000
   @lora_default_reset_pin 25
   @lora_default_dio0_pin 22
-  @lora_default_dio1_pin 23
-  @lora_default_dio2_pin 24
+  #@lora_default_dio1_pin 23
+  #@lora_default_dio2_pin 24
   # hardwire the name od the manager genserver for now
   @comms_manager_server SensorHubComms
+
+  #@lora_default_frq 434.450E6
+
   @doc """
   initialise lora receiver
   the following options are available
   :spi "spidev0.0" , "spidev0.1"
   :spi_speed
   :frq frequency value
-  :ukhas_mode 0,1,2 \\ 1
+  :ukhas_mode 0,1,2 - 8 \\ 1
   :receiver true/false \\ true
   :rst reset pin \\ 25
   :dio0 DIO0 pin \\ 22
 
-  Ukhas mode sets the following lora parameters
-
-  :bw lora bandwidth setting
-  :sf lora spreading factor (6-12)
-  :crc on/off
-  :error_coding
-  :payload_length \\ 255 only applies to sf6 (ukhas mode 1)
-  :ukhas_mode 0,1,2
-
-  initially the modem config is set by a UKHAS mode (default 1) with format
-  [sf: ::6 - 12, bw: , ec: 5-8, explicit: true/false, payload: nil || 255]
-  custom configuration can be set manually following initialisation
+  config options
+  [:rst:: pin number, :dio0 :: pin number, :spi :: spi0.1 || spi 0.0, :spi_speed,
+   :frequency :: Mhz,
+   modem_config: [sf: :: 6-12 , bw: Khz , ec:, explicit: :: true||false , payload: , ldo: ]]
   """
-  def init(config) do
+  def init(config \\ []) do
     pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
     pin_dio_0 = Keyword.get(config, :dio0, @lora_default_dio0_pin)
-    _pin_dio_1 = Keyword.get(config, :dio1, @lora_default_dio1_pin)
-    _pin_dio_2 = Keyword.get(config, :dio2, @lora_default_dio2_pin)
-
     device = Keyword.get(config, :spi, @lora_default_spi)
     speed_hz = Keyword.get(config, :spi_speed, @lora_default_spi_frequency)
 
     {:ok, spi} = start_spi(device, [speed_hz: speed_hz])
 
-    Logger.info("Lora: Start Device")
+    Logger.info("Lora: Start SPI Device")
     {:ok, rst} = GPIO.open(pin_reset, :output)
     {:ok, dio0} = GPIO.open(pin_dio_0,:input, pull_mode: :pullup)
 
     GPIO.set_interrupts(dio0,:rising)
-
+    Logger.info("Lora Reset")
     Modem.reset(rst)
-    mode = Keyword.get(config, :ukhas_mode, 1)
-    modem_config = Lora.UkhasModes.ukhas_mode(mode)
 
     {:ok,
      %{
          spi: spi,
          rst: rst,
          dio0: dio0,
-         config: %{frequency: 0, header: true,
-         modem_config: modem_config,
+         config: %{frequency: nil, header: true,
+         modem_config: nil,
          packet_index: 0,
          on_receive: nil},
          current_mode: :rxdone,
@@ -84,27 +74,29 @@ defmodule Lora.Server do
          auto_tune: true,
          frq_err: 0,
          ppm_comp: 0
-         }}
+         } }
   end
 
-
-
-  def handle_call({:begin, frequency}, _from, state) do
+  def handle_call({:begin, [frq: frequency, modem_config: config]}, _from, state) do
 
     version = Modem.get_version(state.spi)
 
     if version == 0x12 do
-      Modem.begin(state.spi,frequency,state.config.modem_config )
-
+      Modem.begin(state.spi,frequency,config )
       # enable receiver interrupt
       Modem.enable_receiver_interrupts(state.spi)
-      #    Process.send_after(self(), :receiver_mode, 500)
-      {:reply, :ok, %{state | :config => %{state[:config] | :frequency => frequency}}}
+      Logger.info("LoRa begin frq: #{frequency}, config: #{inspect(config)}")
+      {:reply, :ok, %{state | :config => %{state[:config] | :frequency => frequency, :modem_config => config }}}
     else
       Logger.error("Lora: Not a Valid Version")
       {:reply, {:error, :version}, state}
     end
   end
+
+  def handle_call({:get_frq}, _from, state) do
+    {:reply,state[:config][:frequency],state}
+  end
+
 
   # DIO0 interrupt handler
   def handle_info({:circuits_gpio, @lora_default_dio0_pin, _timestamp, _value}, state) do
@@ -150,12 +142,9 @@ defmodule Lora.Server do
     {:noreply, state}
   end
 
-  def handle_cast({:set_ukhas_mode,mode},state) do
-    modem_config = Lora.UkhasModes.ukhas_mode(mode)
-    state = if(mode >= 0 && mode <=2) do
+  def handle_cast({:set_modem_params,modem_config},state) do
       set_modem_params(modem_config,state.spi)
       put_in(state.config,:modem_config,modem_config)
-    end
     {:noreply,state}
   end
 
@@ -203,7 +192,9 @@ defmodule Lora.Server do
   end
 
   def handle_cast({:set_frq, frequency},state) do
+    Modem.idle(state.spi)
     Modem.set_frequency(frequency,state.spi)
+    Modem.receive_continuous_mode(state.spi)
     {:noreply, %{state | :config => %{state[:config] | :frequency => frequency}}}
   end
 
@@ -212,7 +203,7 @@ defmodule Lora.Server do
     {:noreply, state}
   end
 
- defp start_spi(device, opts) do
+  defp start_spi(device, opts) do
     {:ok, spi} = SPI.open(device,opts)
     {:ok, spi}
   end
@@ -277,4 +268,27 @@ defmodule Lora.Server do
       Modem.set_spreading_factor(spi,lora_config[:sf])
       Modem.set_op_mode(op_mode,spi)
     end
-end
+
+    def save_config(_config, _path) do
+
+    end
+
+    @doc """
+    called at initialisation
+    if configuration file exists then read the new config and use it
+    else save the current config to file
+    """
+    def read_config(path,default_config) do
+      if File.exists(path) do
+        {:ok,json_config} = File.read(path)
+        JSON.decode(json_config)
+
+      else
+        # first time this system has been used so write config to file
+        File.write(path,JSON.encode(default_config))
+        {:ok, default_config}
+      end
+
+
+    end
+  end

@@ -24,11 +24,12 @@
   def start_link(config \\ []), do: GenServer.start_link(@server,config, [name: @server_name])
 
   @doc """
-  Initialize the Lora Radio and set your frequency work.
+  Initialize the Lora Radio and set your frequency and modem parametrers.
       {:ok, lora} = Lora.start_link()
       Lora.begin(lora, 433.0e6)
+
   """
-  def begin(frequency), do: GenServer.call(@server_name, {:begin, frequency})
+  def begin(frequency,modem_config), do: GenServer.call(@server_name, {:begin, [frq: frequency , modem_config: modem_config ]})
   @doc """
   Set the Lora UKHAS mode
       Lora.set_ukhas_mode(mode \\ 1)
@@ -41,14 +42,24 @@
   def set_frq(frequency), do: GenServer.cast(@server_name,{:set_frq,frequency})
 
   @doc """
+  Set the Lora modem params sf, bw, etc
+  """
+
+  def set_modem_params(params), do: GenServer.cast(@server_name,{:set_modem_params, params})
+
+  @doc """
     set auto tune mode
   """
+
   def set_auto_tune(set), do: GenServer.cast(@server_name,{:set_auto_tune,set})
   @doc """
   Set the Lora Radio in sleep mode.
       Lora.sleep()
   """
+    def get_frq() do
+      GenServer.call(@server_name,{:get_frq})
 
+    end
   def sleep(), do: GenServer.cast(@server_name, :sleep)
   @doc """
   Awake the Lora Radio.
@@ -91,5 +102,4 @@
     GenServer.cast(@server_name, :sender_mode)
     GenServer.cast(@server_name, {:send, data, header})
   end
-
 end

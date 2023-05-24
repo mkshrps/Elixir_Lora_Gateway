@@ -11,7 +11,7 @@ defmodule Lora.AutoTune do
 
   def tune(frequency,frequency_error,_ppm_comp,spi) when (abs(frequency_error) > 300) do
     new_frq = (frequency - frequency_error) |> round
-    Logger.info("new frq #{new_frq}")
+    Logger.info("autotune new frq #{new_frq}")
     Modem.idle(spi)
     Modem.set_frequency(new_frq,spi)
     Modem.receive_continuous_mode(spi)
@@ -52,7 +52,6 @@ defmodule Lora.AutoTune do
   def get_bw_const(bw) do
 
     bw = bw  /  500000.0
-    Logger.info("bandwidth - #{bw}")
     bw
   end
 

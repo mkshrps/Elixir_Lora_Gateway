@@ -13,7 +13,6 @@ defmodule Lora.Modem do
   def begin(spi, frequency, lora_config, power \\ 17) do
     # Sleep mode
     Logger.debug(lora_config)
-    Logger.debug("Power #{power}")
     sleep(spi)
     # reset ppm compensation
     # Set frequency
@@ -199,7 +198,7 @@ defmodule Lora.Modem do
   def reset_fifo_payload(spi) do
     # Reset FIFO address and payload length
     Communicator.write_register(spi, Parameters.register().fifo_addr_ptr, 0)
-    Communicator.write_register(spi, Parameters.register().payload_length, 128)
+    Communicator.write_register(spi, Parameters.register().payload_length, Parameters.implicit_payload())
   end
 
   def set_frequency(freq,spi) do

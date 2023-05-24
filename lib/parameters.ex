@@ -89,8 +89,8 @@ defmodule Lora.Parameters do
     9 => 250.0e3
   }
 
-
-
+  @implicit_payload_len 255
+  def implicit_payload, do: @implicit_payload_len
   def register, do: @reg
   def mode, do: @mode
   def pa, do: @pa
