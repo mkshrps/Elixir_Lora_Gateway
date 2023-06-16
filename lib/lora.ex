@@ -98,6 +98,10 @@
       Lora.send(lora_pid, "hello world")
       Lora.send(lora_pid, %{value: 10})
   """
+  def set_payload_length(payload_len) do
+    GenServer.cast(@server_name, {:set_payload_length,payload_len})
+  end
+
   def send( data, header \\ true) do
     GenServer.cast(@server_name, :sender_mode)
     GenServer.cast(@server_name, {:send, data, header})

@@ -38,8 +38,8 @@ defmodule Lora.Server do
 
   config options
   [:rst:: pin number, :dio0 :: pin number, :spi :: spi0.1 || spi 0.0, :spi_speed,
-   :frequency :: Mhz,
-   modem_config: [sf: :: 6-12 , bw: Khz , ec:, explicit: :: true||false , payload: , ldo: ]]
+  :frequency :: Mhz,
+  config: [sf: 6, bw: 20.8E3, ec: 5..8 , header_mode: :implicit | :explicit  , payload: \\ 255,ldo: \\ 0]
   """
   def init(config \\ []) do
     pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
@@ -63,7 +63,7 @@ defmodule Lora.Server do
          rst: rst,
          dio0: dio0,
          config: %{frequency: nil, header: true,
-         modem_config: nil,
+         modem_config: config,
          packet_index: 0,
          on_receive: nil},
          current_mode: :rxdone,
@@ -77,6 +77,7 @@ defmodule Lora.Server do
          } }
   end
 
+  # modem_config - see above config for init
   def handle_call({:begin, [frq: frequency, modem_config: config]}, _from, state) do
 
     version = Modem.get_version(state.spi)
@@ -203,6 +204,21 @@ defmodule Lora.Server do
     {:noreply, state}
   end
 
+  def handle_cast({:set_payload_length, payload_length},state) do
+    Modem.idle(state.spi)
+    state = if Modem.set_implicit_payload_length(state.spi,payload_length) == :ok do
+      put_in(state.config.modem_config[:payload],payload_length)
+    else
+      state
+    end
+
+    Modem.receive_continuous_mode(state.spi)
+
+    Logger.info("payload updated #{state.config.modem_config[:payload]}")
+    {:noreply, state}
+  end
+
+
   defp start_spi(device, opts) do
     {:ok, spi} = SPI.open(device,opts)
     {:ok, spi}
@@ -214,33 +230,33 @@ defmodule Lora.Server do
   :error indicates invalid payload
   """
   def process_rx_interrupt(:ok,state) do
+    # read the payload from the lora device
     payload = Modem.read_payload(state.spi,state.config.modem_config[:payload])
-    rssi = Modem.rssi(state.spi,state.config.frequency)
+    rssi = Modem.packet_rssi(state.spi,state.config.frequency)
     snr = Modem.snr(state.spi)
     Logger.info("payload = #{payload}")
     Logger.info("RSSI -  #{rssi}")
     Logger.info("SNR - #{snr}")
     #Modem.reset_fifo_payload(state.spi)
-    state = Map.put(state,:rssi,rssi)
-    state = Map.put(state,:snr,snr)
-    state = Map.put(state,:last_payload,payload)
-    state = Map.put(state,:last_msg_status,:ok)
-    state
+
+   state
+   |> Map.put(:rssi,rssi)
+   |> Map.put(:snr,snr)
+   |> Map.put(:last_payload,payload) # last valid payload received
+   |> Map.put(:last_msg_status,:ok)
   end
 
   def process_rx_interrupt(:error,state) do
-    rssi = Modem.rssi(state.spi,state.config.frequency)
+    rssi = Modem.packet_rssi(state.spi,state.config.frequency)
     snr = Modem.snr(state.spi)
     Logger.info("CRC Error")
     Logger.info("RSSI -  #{rssi}")
     Logger.info("SNR - #{snr}")
     #Modem.reset_fifo_payload(state.spi)
-    state = Map.put(state,:rssi,rssi)
-    state = Map.put(state,:snr,snr)
-    state = Map.put(state,:last_payload,"")
-    state = Map.put(state,:last_msg_status,:crc_error)
     state
-
+    |> Map.put(:rssi,rssi)
+    |> Map.put(:snr,snr)
+    |> Map.put(:last_msg_status,:crc_error)
   end
 
   # read the interrupt register

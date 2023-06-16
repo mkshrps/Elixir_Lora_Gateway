@@ -9,29 +9,28 @@ defmodule Lora.Modem do
   alias Lora.Bits
 
   # frequency e.g. 434.450E6
-  #  lora_config e.g. [sf: ::6 - 12, bw: , ec: , explicit: true/false, payload: nil || 255]
-  def begin(spi, frequency, lora_config, power \\ 17) do
+
+  # Lora Config [sf: 6-12 , bw: 20.8E5, ec:, header_mode: :implicit | :explicit  , payload: \\ 255,ldo: \\ 0]
+  def begin(spi, frequency, lora_config, _power \\ 17) do
     # Sleep mode
     Logger.debug(lora_config)
     sleep(spi)
     # reset ppm compensation
     # Set frequency
-    set_frequency(frequency,spi)
-    set_base_address(spi)
-    # Set LNA boost
     set_LNA_boost(spi)
-    # Set auto AGC
     set_auto_AGC(spi)
     # Set output power to 17 dBm
-    set_tx_power(power,spi)
+    #set_tx_power(power,spi)
 
+    set_frequency(frequency,spi)
     set_coding_rate(spi,lora_config[:ec])
     set_bandwidth(spi,lora_config[:bw])
-    set_spreading_factor(spi,lora_config[:sf])
+    set_spreading_factor(spi,lora_config[:sf],lora_config[:payload])
+    # initialise rx/tx fifo parameters
+    reset_fifo_payload(spi)
     set_base_address(spi)
     #map_dio_5()
     # enable rxdone interrupt
-    # default mode is receiver
     map_dio_0(:rx_done,spi)
     # start receiver
     receive_continuous_mode(spi)
@@ -95,16 +94,21 @@ defmodule Lora.Modem do
   end
 
   def receive_continuous_mode(spi) do
-     Communicator.write_register(
+
+    reset_fifo_payload(spi)
+
+    Communicator.write_register(
       spi,
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().rx_continuous
     )
-  #  :timer.sleep(10)
   end
 
   def receive_single_mode(spi) do
-      Communicator.write_register(
+
+    reset_fifo_payload(spi)
+
+    Communicator.write_register(
       spi,
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().rx_single
@@ -156,11 +160,26 @@ defmodule Lora.Modem do
     Communicator.read_register(spi, Parameters.register().fifo)
   end
 
+  # packet strength can be computed with rssi and snr together due to the need to adjust RSSI if the SNR is negative
+  def packet_signal_strength(spi,frequency) do
+    snr = snr(spi)
+    packet_strength = packet_rssi(spi,frequency)
+    packet_strength = if snr < 0 do
+      packet_strength + snr
+    end
+    [pkt_strength: packet_strength, snr: snr]
+  end
 
   def snr(spi), do: Communicator.read_register(spi, Parameters.register().pkt_snr_value) * 0.25
 
-  def rssi(spi,frequency) do
+  def packet_rssi(spi,frequency) do
     rssi_value = Communicator.read_register(spi, Parameters.register().pkt_rssi_value)
+    rssi_value - if frequency < 868.0e6, do: 164, else: 157
+  end
+
+  # current rssi can be called at any time during reception whther a packet is being received or not
+  def current_rssi(spi,frequency) do
+    rssi_value = Communicator.read_register(spi, Parameters.register().current_rssi_value)
     rssi_value - if frequency < 868.0e6, do: 164, else: 157
   end
 
@@ -198,8 +217,24 @@ defmodule Lora.Modem do
   def reset_fifo_payload(spi) do
     # Reset FIFO address and payload length
     Communicator.write_register(spi, Parameters.register().fifo_addr_ptr, 0)
-    Communicator.write_register(spi, Parameters.register().payload_length, Parameters.implicit_payload())
+    #Communicator.write_register(spi, Parameters.register().payload_length, Parameters.implicit_payload())
   end
+
+  def set_implicit_payload_length(spi,payload_len) when (payload_len > 0 and payload_len <= 255)   do
+    # Reset FIFO address and payload length
+    Communicator.write_register(spi, Parameters.register().payload_length, payload_len)
+    :ok
+  end
+
+
+  def set_implicit_payload_length(_spi,payload_len) do
+    Logger.debug("Attempt to set invalid Payload Length #{payload_len}")
+    :error
+    # Communicator.write_register(spi, Parameters.register().payload_length, Parameters.implicit_payload())
+  end
+
+
+
 
   def set_frequency(freq,spi) do
     frt = trunc((trunc(freq) <<< 19) / 32_000_000)
@@ -311,23 +346,50 @@ defmodule Lora.Modem do
       )
   end
 
-  def set_spreading_factor(spi,sf) do
-    if sf == 6 do
-      Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC5)  # changed from 0xC5
-      Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0C)
-      enable_crc(spi) # force crc enabled if sf = 6
-      set_header_mode(spi,false) # force implicit mode with sf = 6
-    else
-      Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC3)
-      Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0A)
-    end
+
+    # set sf some registers are sf specific to sf-6
+  def set_spreading_factor(spi,sf,payload_length) when sf == 6 do
+
+    Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC5)  # changed from 0xC5 reg 31
+    Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0C)
+
+    enable_crc(spi) # force payload crc enabled if sf = 6
+    set_header_mode(spi,:implicit) # force implicit mode with sf = 6
+    set_implicit_payload_length(spi,payload_length)
 
     config2 = Communicator.read_register(spi, Parameters.register().modem_config_2)
 
     sf_ = (config2 &&& 0x0F) ||| (sf <<< 4 &&& 0xF0)
     Communicator.write_register(spi, Parameters.register().modem_config_2, sf_)
+
+    #reset_fifo_payload(spi)
     set_ldo_flag(spi)
   end
+
+
+  def set_spreading_factor(spi,sf) when (sf >= 6 and sf <= 12) do
+
+    Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC3)
+    Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0A)
+
+    config2 = Communicator.read_register(spi, Parameters.register().modem_config_2)
+
+    sf_ = (config2 &&& 0x0F) ||| (sf <<< 4 &&& 0xF0)
+    Communicator.write_register(spi, Parameters.register().modem_config_2, sf_)
+    #reset_fifo_payload(spi)
+    set_ldo_flag(spi)
+  end
+
+  def set_spreading_factor(_spi,sf)  do
+    Logger.debug("Invalid SF value #{sf}")
+  end
+
+  # read the current sf
+  def get_spreading_factor(spi) do
+    config = Communicator.read_register(spi, Parameters.register().modem_config_2)
+    config >>> 4
+  end
+
 
   def set_bandwidth(spi,sbw) do
     reg = Communicator.read_register(spi, Parameters.register().modem_config_1)
@@ -338,6 +400,7 @@ defmodule Lora.Modem do
     |> set_bw(spi, reg)
 
     set_ldo_flag(spi)
+
   end
 
   defp set_bw({bw, _freq},spi,reg) do
@@ -347,6 +410,7 @@ defmodule Lora.Modem do
       (reg &&& 0x0F) ||| bw <<< 4
     )
   end
+
 
   def set_coding_rate( spi, coding_rate) do
     reg = Communicator.read_register(spi, Parameters.register().modem_config_1)
@@ -379,51 +443,59 @@ defmodule Lora.Modem do
     do: Communicator.write_register(spi, Parameters.register().modem_config_3, 0x04)
 
   # set explicit / implicit mode
-  def set_header_mode(spi,expl) do
+  def set_header_mode(spi,:implicit) do
+    modem_config_1 = Communicator.read_register(spi, Parameters.register().modem_config_1)
+    Communicator.write_register(
+        spi,
+        Parameters.register().modem_config_1,
+        modem_config_1 ||| 0x01)
+  end
+
+  # set explicit / implicit mode
+  def set_header_mode(spi,:explicit) do
     modem_config_1 = Communicator.read_register(spi, Parameters.register().modem_config_1)
 
-    if expl,
-      do:
-        Communicator.write_register(
-          spi,
-          Parameters.register().modem_config_1,
-          modem_config_1 &&& Parameters.header(expl)
-        ),
-      else:
-
-        Communicator.write_register(
-          spi,
-          Parameters.register().modem_config_1,
-          modem_config_1 ||| Parameters.header(expl)
-        )
-
+    Communicator.write_register(
+        spi,
+        Parameters.register().modem_config_1,
+        modem_config_1 &&& 0xFE
+      )
     reset_fifo_payload(spi)
   end
 
-  def enable_crc(spi),
-    do:
+  def set_header_mode(_spi,_) do
+    Logger.debug("set_header mode invalid argument ")
+  end
+
+  def get_header_mode(spi) do
+    if Communicator.read_register( spi, Parameters.register().modem_config_1) && 0x01 == 0 do
+      :explicit
+    else
+      :implicit
+    end
+  end
+
+  def enable_crc(spi) do
+
       Communicator.write_register(
         spi,
         Parameters.register().modem_config_2,
         Communicator.read_register(spi, Parameters.register().modem_config_2) ||| 0x04
       )
+  end
 
-  def disable_crc(spi),
-    do:
+  def disable_crc(spi) do
       Communicator.write_register(
         spi,
         Parameters.register().modem_config_2,
         Communicator.read_register(spi, Parameters.register().modem_config_2) ||| 0xFB
       )
+  end
+
 
   def get_signal_band_width(spi) do
     bw = Communicator.read_register(spi, Parameters.register().modem_config_1) >>> 4
     Parameters.bw_freqs()[bw]
-  end
-
-  def get_spreading_factor(spi) do
-    config = Communicator.read_register(spi, Parameters.register().modem_config_2)
-    config >>> 4
   end
 
   def get_version(spi), do: Communicator.read_register(spi, Parameters.register().version)

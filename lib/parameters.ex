@@ -19,6 +19,8 @@ defmodule Lora.Parameters do
     rx_nb_bytes: 0x13,
     pkt_snr_value: 0x19,
     pkt_rssi_value: 0x1A,
+    current_rssi_value: 0x1B,
+    reg_hop_channel: 0x1c,
     modem_config_1: 0x1D,
     modem_config_2: 0x1E,
     preamble_msb: 0x20,
